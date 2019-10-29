@@ -217,7 +217,7 @@ def parse_based_on_template1():
     fp.close()
     print("Subtotal without tax: ", sub_total_without_tax)
     sheet1.write(row_counter, 5, sub_total_without_tax)
-    wb.save('xlwt example.xls')
+    wb.save('parsed_invoice.xls')
 
 
 if template == 1:
