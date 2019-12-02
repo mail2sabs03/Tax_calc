@@ -11,12 +11,13 @@ from xlwt import Workbook
 from InvoiceSummary import InvoiceSummary
 from openpyxl import load_workbook
 from datetime import datetime
-
+from geotext import GeoText
 
 print("execution started: ", datetime.now())
 
 # PDF_file = "XYZInc.pdf"
 # PDF_file = "ICE Data Invoice.pdf"
+
 Tax_file: str = "AS_complete+.xlsx"
 
 tax_dictionary = {}
@@ -155,6 +156,8 @@ def identify_template():
 
             if "ICE Data Pricing & Reference Data, LLC" == line:
                 return 2
+            if "Client Legal Entity:" in line:
+                return 3
 
             cnt += 1
     fp.close()
@@ -504,18 +507,154 @@ def parse_based_on_template2():
         output_workbook.save('Tax Calculation.xls')
 
 
+def parse_based_on_template3():
+    global row_counter
+    global to_company_name
+    global city
+    global state
+    global zip_code
+    global country
+    global from_company_name
+    global sales_tax
+    global invoice_date
+    global invoice_number
+    global account_number
+
+    fetch_account_number = True
+    fetch_invoice_number = False
+    fetch_invoice_date = False
+    fetch_to_company_name = False
+    fetch_from_company_name = False
+    fetch_address_line1 = False
+    fetch_state_zip_code_country = False
+    fetch_sub_total = False
+
+    with open("out_text.txt") as fp:
+        for line in fp:
+            line = line.strip()
+            if not line:
+                continue
+            if fetch_account_number:
+                if "Billing Account No.:" in line:
+                    account_number_summary = line.split()
+                    account_number = account_number_summary[3].strip()
+                    print("account_number: ", account_number)
+                    fetch_account_number = False
+                    fetch_invoice_number = True
+                    continue
+            if fetch_invoice_number:
+                if "Invoice Number:" in line:
+                    invoice_number_summary = line.split()
+                    invoice_number = invoice_number_summary[2].strip()
+                    print("invoice_number: ", invoice_number)
+                    fetch_invoice_number = False
+                    fetch_invoice_date = True
+                    continue
+            if fetch_invoice_date:
+                if "Invoice Date:" in line:
+                    invoice_date_summary = line.split()
+                    invoice_date = invoice_date_summary[2].strip()
+                    print("invoice_date: ", invoice_date)
+                    fetch_invoice_date = False
+                    fetch_to_company_name = True
+                    continue
+            if fetch_to_company_name:
+                if "Client Legal Entity:" in line:
+                    to_company_summary = line.split('Client Legal Entity:')
+                    to_company_name = to_company_summary[1].strip()
+                    print("to_company_name: ", to_company_name)
+                    fetch_to_company_name = False
+                    fetch_from_company_name = True
+                    continue
+            if fetch_from_company_name:
+                company_summary = line.split('LLC')
+                if len(company_summary) > 1:
+                    from_company_name = company_summary[0].strip() + ' LLC'
+                    print("from company name: ", from_company_name)
+                    fetch_from_company_name = False
+                    fetch_address_line1 = True
+                    continue
+            if fetch_address_line1:
+                fetch_address_line1 = False
+                fetch_state_zip_code_country = True
+                continue
+            if fetch_state_zip_code_country:
+                # User Address: Credit Suisse First Boston 11 Madison Avenue NEW YORK NY 10010-3698 USA
+                if "User Address:" in line:
+                    state_city_country_summary = line.split()
+
+                    city = state_city_country_summary[-4].strip()
+                    state = state_city_country_summary[-3].strip()
+                    zip_code = state_city_country_summary[-2].strip()
+                    country = state_city_country_summary[-1].strip()
+
+                    # extract the city
+                    line = line.title()
+                    places = GeoText(line)
+                    city = places.cities[0]
+
+                    print("City: ", city)
+                    print("State: ", state)
+                    print("Zip Code: ", zip_code)
+                    print("Country: ", country)
+                    zip_code_arr = zip_code.split('-')
+                    zip_code = zip_code_arr[0]
+                    if country == 'USA':
+                        if zip_code and not zip_code.isspace() and zip_code.isnumeric():
+                            sales_tax = tax_dictionary.get(int(zip_code))
+                            print("sales tax: ", sales_tax)
+                        else:
+                            sales_tax = get_sales_tax_from_state_city(state, city)
+                            print("sales tax: ", sales_tax)
+                    fetch_state_zip_code_country = False
+                    fetch_sub_total = True
+                    continue
+            if fetch_sub_total:
+                if "PRODUCTS & SERVICES Sub-total" in line:
+                    sub_total_summary = line.split()
+                    subtotal = sub_total_summary[4].strip()
+                    subtotal = subtotal.replace(',', '')
+                    subtotal_float = float(subtotal)
+                    print("subtotal: ", subtotal_float)
+
+                    sales_tax_float = float(sales_tax)
+                    sub_total_tax_float = subtotal_float * sales_tax_float
+                    print("Subtotal tax: ", sub_total_tax_float)
+                    print("Subtotal with tax: ", subtotal_float + sub_total_tax_float)
+
+                    sheet1.write(row_counter, 0, from_company_name)
+                    sheet1.write(row_counter, 1, account_number)
+                    sheet1.write(row_counter, 2, invoice_number)
+                    sheet1.write(row_counter, 3, invoice_date)
+                    sheet1.write(row_counter, 4, to_company_name)
+                    sheet1.write(row_counter, 5, city)
+                    sheet1.write(row_counter, 6, state)
+                    sheet1.write(row_counter, 7, zip_code)
+                    sheet1.write(row_counter, 8, country)
+                    sheet1.write(row_counter, 9, subtotal_float)
+                    sheet1.write(row_counter, 10, sales_tax_float)
+                    sheet1.write(row_counter, 11, subtotal_float + sub_total_tax_float)
+                    row_counter = row_counter + 1
+                    fetch_sub_total = False
+                    break
+    fp.close()
+    output_workbook.save('Tax Calculation.xls')
+
+
 initialize_tax_dictionary()
 print("tax dictionary: ", tax_dictionary)
 
 for filename in os.listdir("PDF_Files"):
-    if filename.endswith(".pdf"):
-        convert_pdf_to_text("PDF_Files/" + filename)
-        template = identify_template()
-        print(template)
+    # if filename.endswith("Refinitiv Invoice.pdf"):
+    convert_pdf_to_text("PDF_Files/" + filename)
+    template = identify_template()
+    print(template)
 
-        if template == 1:
-            parse_based_on_template1()
-        elif template == 2:
-            parse_based_on_template2()
+    if template == 1:
+        parse_based_on_template1()
+    elif template == 2:
+        parse_based_on_template2()
+    elif template == 3:
+        parse_based_on_template3()
 
 print("execution completed: ", datetime.now())
